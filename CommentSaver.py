@@ -4,8 +4,8 @@ import os
 import sys
 import re
 import bs4
-
 import htmlGetter
+
 
 # 生放送の動画のIDをVIDEO_IDに代入
 VIDEO_ID = ""
@@ -27,6 +27,7 @@ def get_json(html):
             json_dict = json.loads(json_line)
     return json_dict
 
+
 # 最初の動画のURLからcontinuationを引っ張ってくる
 def get_initial_continuation(url):
     html = htmlGetter.get_html(url)
@@ -37,6 +38,7 @@ def get_initial_continuation(url):
     print('InitialContinuation : ', continuation)
     return continuation
 
+
 # htmlから抽出したjson形式の辞書からcontinuationの値を抜き出す
 def get_continuation(json_dict):
     try:
@@ -46,6 +48,7 @@ def get_continuation(json_dict):
         continuation = ""
         print("Continuation NotFound")
     return continuation
+
 
 # コメントデータから文字列を取得する
 def get_chat_text(actions):
@@ -67,6 +70,7 @@ def get_chat_text(actions):
     if len(lines) > 1:
         del lines[len(lines) - 1]
     return lines
+
 
 # 与えられたcontinuationから順次コメントを取得する
 def get_live_chat_replay(continuation):
