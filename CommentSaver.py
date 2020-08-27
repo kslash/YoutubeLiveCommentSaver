@@ -4,7 +4,19 @@ import os
 import sys
 import re
 import bs4
+from logging import getLogger, StreamHandler, FileHandler, Formatter, DEBUG, WARN
 import htmlGetter
+
+logger = getLogger(__name__)
+stream_handler = StreamHandler()
+stream_handler.setLevel(WARN)
+logger.addHandler(stream_handler)
+
+file_handler = FileHandler(filename="comment_saver.log", encoding='utf-8')
+file_handler.setLevel(DEBUG)
+file_handler.setFormatter(Formatter("%(asctime)s %(levelname)8s %(message)s"))
+logger.addHandler(file_handler)
+logger.setLevel(DEBUG)
 
 
 # 生放送の動画のIDをVIDEO_IDに代入
@@ -21,9 +33,9 @@ def get_json(html):
     json_dict = None
     for script in soup.find_all("script"):
         if 'window["ytInitialData"]' in str(script):
-            #print(script.string)
+            logger.debug(script.string)
             json_line = re.findall(r"window\[\"ytInitialData\"\] = (.*);", script.string)[0]
-            #print(json_line)
+            logger.debug(json_line)
             json_dict = json.loads(json_line)
     return json_dict
 
@@ -35,7 +47,7 @@ def get_initial_continuation(url):
     json_dict = get_json(html)
 
     continuation = json_dict['contents']['twoColumnWatchNextResults']['conversationBar']['liveChatRenderer']['continuations'][0]['reloadContinuationData']['continuation']
-    print('InitialContinuation : ', continuation)
+    logger.debug("InitialContinuation:" + str(continuation))
     return continuation
 
 
@@ -43,10 +55,10 @@ def get_initial_continuation(url):
 def get_continuation(json_dict):
     try:
         continuation = json_dict['continuationContents']['liveChatContinuation']['continuations'][0]['liveChatReplayContinuationData']['continuation']
-        print("NextContinuation: ", continuation)
+        logger.debug("NextContinuation: " + str(continuation))
     except KeyError:
         continuation = ""
-        print("Continuation NotFound")
+        logger.warning("Continuation NotFound")
     return continuation
 
 
@@ -62,8 +74,8 @@ def get_chat_text(actions):
             name = comment_data['authorName']['simpleText']
             text = comment_data['message']['simpleText']
             line = "{time}\t{name}\t{text}\n".format(time=time, name=name, text=text)
+            logger.debug(line)
             lines.append(line)
-            print(line)
         except KeyError:
             continue
     # 最後の行のコメントデータが次のcontinuationの最初のコメントデータを一致するため切り捨て
@@ -83,7 +95,7 @@ def get_live_chat_replay(continuation):
             html = htmlGetter.get_html(url)
 
             json_dict = get_json(html)
-            #print(json_dict)
+            logger.debug(json_dict)
 
             # key:actions中に各ユーザーのコメントが格納されている
             actions = json_dict["continuationContents"]["liveChatContinuation"]["actions"]
