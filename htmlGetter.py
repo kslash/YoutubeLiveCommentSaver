@@ -17,20 +17,7 @@ def get_html(url):
     try:
         request = urllib.request.urlopen(req)
     except:
-        print("urlopen error")
         get_html(url)
 
     html = request.read()
-    # エンコーディング形式を取得
-    enc = chardet.detect(html)
-    #print(enc)
-    decoded = ""
-    if enc["encoding"]:
-        try:
-            decoded = codecs.decode(html,encoding=enc["encoding"], errors='strict')
-        # デコードできなかったらとりあえずutf-8でデコードする
-        except UnicodeDecodeError as e:
-            print("UnicodeDecodeError {0}".format(e.reason))
-            decoded = codecs.decode(html,encoding="utf-8", errors='strict')
-
-    return decoded
+    return codecs.decode(html,encoding='utf-8', errors='strict')
