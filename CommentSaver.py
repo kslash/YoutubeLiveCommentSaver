@@ -16,7 +16,7 @@ CONTINUATION_URL_FORMAT = "https://www.youtube.com/live_chat_replay?continuation
 
 # htmlファイルから目的のjsonファイルを取得する
 def get_json(html):
-    soup = bs4.BeautifulSoup(html, "lxml")
+    soup = bs4.BeautifulSoup(html, "html.parser")
 
     json_dict = None
     for script in soup.find_all("script"):
