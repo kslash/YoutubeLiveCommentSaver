@@ -6,6 +6,7 @@ import re
 import bs4
 from logging import getLogger, StreamHandler, FileHandler, Formatter, DEBUG, WARN
 import htmlGetter
+from jsonpath_ng import jsonpath, parse
 
 logger = getLogger(__name__)
 stream_handler = StreamHandler()
@@ -42,44 +43,57 @@ def get_json(html):
     return json_dict
 
 
+initial_continuation_path = parse(
+    "contents.twoColumnWatchNextResults.conversationBar.liveChatRenderer.continuations[0].reloadContinuationData.continuation"
+)
+
+
 # 最初の動画のURLからcontinuationを引っ張ってくる
 def get_initial_continuation(url):
     html = htmlGetter.get_html(url)
-
     json_dict = get_json(html)
-
-    continuation = json_dict['contents']['twoColumnWatchNextResults']['conversationBar']['liveChatRenderer']['continuations'][0]['reloadContinuationData']['continuation']
-    logger.debug("InitialContinuation:" + str(continuation))
+    continuation = initial_continuation_path.find(json_dict)[0].value
+    logger.debug("InitialContinuation:" + continuation)
     return continuation
+
+
+continuation_path = parse("continuationContents.liveChatContinuation.continuations[0].liveChatReplayContinuationData.continuation")
 
 
 # htmlから抽出したjson形式の辞書からcontinuationの値を抜き出す
 def get_continuation(json_dict):
-    try:
-        continuation = json_dict['continuationContents']['liveChatContinuation']['continuations'][0]['liveChatReplayContinuationData']['continuation']
-        logger.debug("NextContinuation: " + str(continuation))
-    except KeyError:
-        continuation = ""
+    matches = continuation_path.find(json_dict)
+    if matches:
+        continuation = matches[0].value
+        logger.debug("NextContinuation: " + continuation)
+        return continuation
+    else:
         logger.warning("Continuation NotFound")
-    return continuation
+        return None
 
 
 # コメントデータから文字列を取得する
 def get_chat_text(actions):
     lines = []
     for item in actions:
-        # ユーザーによるコメント要素のみ取得する
-        try:
-            # ユーザー名やテキスト、アイコンなどのデータが入っている
-            comment_data = item['replayChatItemAction']['actions'][0]['addChatItemAction']['item']['liveChatTextMessageRenderer']
-            time = comment_data['timestampText']['simpleText']
-            name = comment_data['authorName']['simpleText']
-            text = comment_data['message']['simpleText']
-            line = "{time}\t{name}\t{text}\n".format(time=time, name=name, text=text)
-            logger.debug(line)
-            lines.append(line)
-        except KeyError:
+        logger.info("item:" + json.dumps(item, indent="  ", ensure_ascii=False))
+
+        # ユーザー名やテキスト、アイコンなどのデータが入っている
+        comment_data = item['replayChatItemAction']['actions'][0].get('addChatItemAction', None)
+        if not comment_data:
             continue
+        comment_data = comment_data['item'].get('liveChatTextMessageRenderer', None)
+
+        if not comment_data:
+            continue
+
+        time = comment_data['timestampText'].get('simpleText', None)
+        name = comment_data['authorName'].get('simpleText', None)
+        text = comment_data['message']['runs'][0].get('text', None)
+        line = "{time}\t{name}\t{text}\n".format(time=time, name=name, text=text)
+        logger.debug(line)
+        lines.append(line)
+
     # 最後の行のコメントデータが次のcontinuationの最初のコメントデータを一致するため切り捨て
     if len(lines) > 1:
         del lines[len(lines) - 1]
@@ -97,16 +111,17 @@ def get_live_chat_replay(continuation):
             html = htmlGetter.get_html(url)
 
             json_dict = get_json(html)
-            logger.debug(json_dict)
 
             # key:actions中に各ユーザーのコメントが格納されている
-            actions = json_dict["continuationContents"]["liveChatContinuation"]["actions"]
+            actions = json_dict["continuationContents"]["liveChatContinuation"].get("actions", [])
             # 複数件のコメントをlist形式で取得
             lines = get_chat_text(actions)
             # 次のcontinuationを取得する
             continuation = get_continuation(json_dict)
 
             f.writelines(lines)
+            f.flush()
+
 
 if __name__ == "__main__":
     args = sys.argv
@@ -114,12 +129,6 @@ if __name__ == "__main__":
         VIDEO_ID = args[1]
 
     url = "https://www.youtube.com/watch?v="+VIDEO_ID
-    # urlのリストから取得する
-    '''
-    for url in urls:
-        initial_continuation = get_initial_continuation(url)
-        get_live_chat_replay(initial_continuation)
-    '''
 
     # 生放送の録画ページから最初のcontinuationを取得する
     initial_continuation = get_initial_continuation(url)
