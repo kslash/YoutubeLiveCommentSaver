@@ -29,14 +29,16 @@ CONTINUATION_URL_FORMAT = "https://www.youtube.com/live_chat_replay?continuation
 # htmlファイルから目的のjsonファイルを取得する
 def get_json(html):
     soup = bs4.BeautifulSoup(html, "html.parser")
+    script = next(filter(lambda s: 'window["ytInitialData"]' in str(s), soup.find_all("script")), None)
 
-    json_dict = None
-    for script in soup.find_all("script"):
-        if 'window["ytInitialData"]' in str(script):
-            logger.debug(script.string)
-            json_line = re.findall(r"window\[\"ytInitialData\"\] = (.*);", script.string)[0]
-            logger.debug(json_line)
-            json_dict = json.loads(json_line)
+    if not script:
+        raise Exception('<script> tag was not found')
+
+    json_line = re.findall(r"window\[\"ytInitialData\"\] = (.*);", script.string)[0]
+    json_dict = json.loads(json_line)
+
+    logger.debug(json.dumps(json_dict, indent="  ", ensure_ascii=False))
+
     return json_dict
 
 
