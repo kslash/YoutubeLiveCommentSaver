@@ -1,34 +1,116 @@
 import json
 import codecs
 import os
-import sys
 import re
 import bs4
-from logging import getLogger, StreamHandler, FileHandler, Formatter, DEBUG, WARN
+from logging import getLogger, StreamHandler, FileHandler, Formatter, DEBUG, INFO
 import htmlGetter
-from jsonpath_ng import jsonpath, parse
+from jsonpath_ng import parse
+import argparse
+from urllib.parse import urlparse, parse_qs, urlunparse, urlencode
+from pprint import pformat
+import csv
 
 logger = getLogger(__name__)
-stream_handler = StreamHandler()
-stream_handler.setLevel(WARN)
-logger.addHandler(stream_handler)
-
-file_handler = FileHandler(filename="comment_saver.log", encoding='utf-8')
-file_handler.setLevel(DEBUG)
-file_handler.setFormatter(Formatter("%(asctime)s %(levelname)8s %(message)s"))
-logger.addHandler(file_handler)
-logger.setLevel(DEBUG)
-
 
 # 生放送の動画のIDをVIDEO_IDに代入
-VIDEO_ID = ""
 OUTPUT_DIR = "./CommentFiles/"
 
-CONTINUATION_URL_FORMAT = "https://www.youtube.com/live_chat_replay?continuation={continuation}"
+
+class InitialData:
+    def __init__(self, initial_data):
+        self._initial_data = initial_data
+
+
+class FirstInitialData(InitialData):
+
+    _continuation_path = parse(
+        "contents.twoColumnWatchNextResults.conversationBar.liveChatRenderer.continuations[0].reloadContinuationData.continuation"
+    )
+
+    def __init__(self, initial_data):
+        super().__init__(initial_data)
+        self.continuation = self._continuation_path.find(initial_data)[0].value
+
+
+class NextInitialData(InitialData):
+
+    _continuation_path = parse("continuationContents.liveChatContinuation.continuations[0].liveChatReplayContinuationData.continuation")
+
+    def __init__(self, initial_data):
+        super().__init__(initial_data)
+        matches = self._continuation_path.find(initial_data)
+        if matches:
+            self.continuation = matches[0].value
+        else:
+            self.continuation = None
+
+    @property
+    def actions(self):
+        return self._initial_data["continuationContents"]["liveChatContinuation"].get("actions", [])
+
+    @property
+    def lines(self):
+        # 最後の一行は continuation が入っているのでスキップ
+        for action in self.actions[:-1]:
+            action_name = list(action.keys())[0]
+            chat_item_actions = action[action_name]['actions']
+
+            if len(chat_item_actions) > 1:
+               logger.debug('chat_item_actions: %s' % pformat(chat_item_actions, indent=2, width=1, compact=False))
+
+            chat_item_action = chat_item_actions[0]
+            chat_item_action_name = list(chat_item_action.keys())[0]
+
+            if chat_item_action_name != 'replayChatItemAction' and chat_item_action_name != 'addChatItemAction':
+                logger.debug('unkown_action: %s' % pformat(chat_item_action, indent=2, width=1, compact=False))
+                continue
+
+            if chat_item_action_name == 'addChatItemAction' or chat_item_action_name == 'addLiveChatTickerItemAction':
+                item = chat_item_action[chat_item_action_name]['item']
+
+                renderer_name = list(item.keys())[0]
+
+                if renderer_name == 'liveChatTextMessageRenderer':
+                    pass
+                else:
+                    logger.debug('unkown_renderer: %s' % pformat(item, indent=2, width=1, compact=False))
+                    continue
+
+                # elif renderer_name == 'liveChatPaidMessageRenderer':
+                #     pass
+                # elif renderer_name == 'liveChatPaidStickerRenderer':
+                #     pass
+                # elif renderer_name == 'liveChatTickerPaidStickerItemRenderer':
+                #     pass
+                # elif renderer_name == 'liveChatTickerPaidMessageItemRenderer':
+                #     pass
+                # elif renderer_name == 'liveChatMembershipItemRenderer':
+                #     pass
+                # elif renderer_name == 'liveChatTickerSponsorItemRenderer':
+                #     pass
+                # elif renderer_name == 'liveChatPlaceholderItemRenderer':
+                #     pass
+
+                comment_data = item[renderer_name]
+
+                time = comment_data['timestampText'].get('simpleText', None)
+                name = comment_data['authorName'].get('simpleText', None)
+                text = comment_data['message']['runs'][0].get('text', None)
+                yield {
+                    'time': time,
+                    'name': name,
+                    'text': text
+                }
+ 
+            else:
+                pass
+
 
 
 # htmlファイルから目的のjsonファイルを取得する
-def get_json(html):
+def get_initial_data(url, first=False):
+    html = htmlGetter.get_html(url)
     soup = bs4.BeautifulSoup(html, "html.parser")
     script = next(filter(lambda s: 'window["ytInitialData"]' in str(s), soup.find_all("script")), None)
 
@@ -38,98 +120,70 @@ def get_json(html):
     json_line = re.findall(r"window\[\"ytInitialData\"\] = (.*);", script.string)[0]
     json_dict = json.loads(json_line)
 
-    logger.debug(json.dumps(json_dict, indent="  ", ensure_ascii=False))
+    # logger.debug("ytInitialData: %s" % json.dumps(json_dict, indent="  ", ensure_ascii=False))
 
-    return json_dict
-
-
-initial_continuation_path = parse(
-    "contents.twoColumnWatchNextResults.conversationBar.liveChatRenderer.continuations[0].reloadContinuationData.continuation"
-)
+    return NextInitialData(json_dict) if not first else FirstInitialData(json_dict)
 
 
-# 最初の動画のURLからcontinuationを引っ張ってくる
-def get_initial_continuation(url):
-    html = htmlGetter.get_html(url)
-    json_dict = get_json(html)
-    continuation = initial_continuation_path.find(json_dict)[0].value
-    logger.debug("InitialContinuation:" + continuation)
-    return continuation
+def main(args):
 
+    stream_handler = StreamHandler()
+    stream_handler.setLevel(INFO)
+    logger.addHandler(stream_handler)
 
-continuation_path = parse("continuationContents.liveChatContinuation.continuations[0].liveChatReplayContinuationData.continuation")
-
-
-# htmlから抽出したjson形式の辞書からcontinuationの値を抜き出す
-def get_continuation(json_dict):
-    matches = continuation_path.find(json_dict)
-    if matches:
-        continuation = matches[0].value
-        logger.debug("NextContinuation: " + continuation)
-        return continuation
+    if args.debug:
+        file_handler = FileHandler(filename="comment_saver_%s.log" % args.video_id, encoding='utf-8', mode='w')
+        file_handler.setLevel(DEBUG)
+        file_handler.setFormatter(Formatter("%(asctime)s %(levelname)8s %(message)s"))
+        logger.addHandler(file_handler)
+        logger.setLevel(DEBUG)
     else:
-        logger.warning("Continuation NotFound")
-        return None
+        logger.setLevel(INFO)
 
+    url = urlunparse(('https', 'www.youtube.com', '/watch', None, urlencode({'v': args.video_id}), None))
 
-# コメントデータから文字列を取得する
-def get_chat_text(actions):
-    lines = []
-    for item in actions:
-        logger.info("item:" + json.dumps(item, indent="  ", ensure_ascii=False))
+    # 最初の continuation を得る
+    initial_data = get_initial_data(url, first=True)
+    continuation = initial_data.continuation
+    logger.info("InitialContinuation: %s" % continuation)
 
-        # ユーザー名やテキスト、アイコンなどのデータが入っている
-        comment_data = item['replayChatItemAction']['actions'][0].get('addChatItemAction', None)
-        if not comment_data:
-            continue
-        comment_data = comment_data['item'].get('liveChatTextMessageRenderer', None)
-
-        if not comment_data:
-            continue
-
-        time = comment_data['timestampText'].get('simpleText', None)
-        name = comment_data['authorName'].get('simpleText', None)
-        text = comment_data['message']['runs'][0].get('text', None)
-        line = "{time}\t{name}\t{text}\n".format(time=time, name=name, text=text)
-        logger.debug(line)
-        lines.append(line)
-
-    # 最後の行のコメントデータが次のcontinuationの最初のコメントデータを一致するため切り捨て
-    if len(lines) > 1:
-        del lines[len(lines) - 1]
-    return lines
-
-
-# 与えられたcontinuationから順次コメントを取得する
-def get_live_chat_replay(continuation):
     if not os.path.exists(OUTPUT_DIR):
         os.makedirs(OUTPUT_DIR)
 
-    with codecs.open(OUTPUT_DIR + VIDEO_ID + '.tsv', mode='a', encoding='utf-8') as f:
+    with codecs.open(OUTPUT_DIR + args.video_id + '.tsv', mode='w', encoding='utf-8') as f:
+        tsv_writer = csv.DictWriter(f, fieldnames=['time', 'name', 'text'], dialect=csv.excel_tab)
+        tsv_writer.writeheader()
+
         while continuation:
-            url = CONTINUATION_URL_FORMAT.format(continuation=continuation)
-            html = htmlGetter.get_html(url)
+            url = urlunparse(('https', 'www.youtube.com', '/live_chat_replay', None, urlencode({'continuation': continuation}), None))
+            initial_data = get_initial_data(url)
+            for line in initial_data.lines:
+                tsv_writer.writerow(line)
+            continuation = initial_data.continuation
+            logger.info("NextContinuation: %s" % continuation)
 
-            json_dict = get_json(html)
 
-            # key:actions中に各ユーザーのコメントが格納されている
-            actions = json_dict["continuationContents"]["liveChatContinuation"].get("actions", [])
-            # 複数件のコメントをlist形式で取得
-            lines = get_chat_text(actions)
-            # 次のcontinuationを取得する
-            continuation = get_continuation(json_dict)
+def VideoId(string):
+    url = urlparse(string)
+    if(url.scheme != "https" or
+       url.hostname != "www.youtube.com" or
+       url.path != "/watch"
+       ):
+        raise argparse.ArgumentTypeError('specified url is not that of YouTube')
 
-            f.writelines(lines)
-            f.flush()
+    query = parse_qs(url.query)
+
+    if 'v' not in query:
+        raise argparse.ArgumentTypeError('Video id parameter is not found')
+
+    return query.get('v')[0]
 
 
 if __name__ == "__main__":
-    args = sys.argv
-    if len(args) > 1:
-        VIDEO_ID = args[1]
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--debug", action="store_true",
+                        help="increase output verbosity")
+    parser.add_argument("video_id", metavar='<youtube url>', help="youtube movie url", type=VideoId)
+    args = parser.parse_args()
 
-    url = "https://www.youtube.com/watch?v="+VIDEO_ID
-
-    # 生放送の録画ページから最初のcontinuationを取得する
-    initial_continuation = get_initial_continuation(url)
-    get_live_chat_replay(initial_continuation)
+    main(args)
